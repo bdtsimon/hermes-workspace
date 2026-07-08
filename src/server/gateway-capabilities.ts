@@ -157,6 +157,119 @@ function effectiveProbeTtl(caps: { health: boolean; chatCompletions: boolean }):
 const DASHBOARD_TOKEN_REGEX =
   /window\._+(?:CLAUDE|HERMES)_+SESSION_+TOKEN__+\s*=\s*["']([^"']+)["']/
 
+let dashboardCookieCache = ''
+let dashboardCookiePromise: Promise<string> | null = null
+
+function readLocalEnvValue(file: string, key: string): string {
+  try {
+    const raw = fs.readFileSync(file, 'utf-8')
+    const line = raw
+      .split(/\r?\n/)
+      .find((candidate) => candidate.trim().startsWith(`${key}=`))
+    if (!line) return ''
+    let value = line.slice(line.indexOf('=') + 1).trim()
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1)
+    }
+    return value
+  } catch {
+    return ''
+  }
+}
+
+function dashboardBasicAuthCredentials():
+  | { username: string; password: string }
+  | null {
+  const hermesEnv = path.join(
+    os.homedir(),
+    'midas-server/docker/hermes-agent/.env',
+  )
+  const username =
+    process.env.HERMES_DASHBOARD_BASIC_AUTH_USERNAME ||
+    readLocalEnvValue(hermesEnv, 'HERMES_DASHBOARD_BASIC_AUTH_USERNAME')
+  const password =
+    process.env.HERMES_DASHBOARD_BASIC_AUTH_PASSWORD ||
+    readLocalEnvValue(hermesEnv, 'HERMES_DASHBOARD_BASIC_AUTH_PASSWORD')
+
+  return username && password ? { username, password } : null
+}
+
+function splitSetCookieHeader(value: string): string[] {
+  return value.split(/,(?=\s*[^;,]+=)/g)
+}
+
+function cookieHeaderFromResponse(headers: Headers): string {
+  const extended = headers as Headers & { getSetCookie?: () => string[] }
+  const setCookies =
+    extended.getSetCookie?.() ||
+    (headers.get('set-cookie')
+      ? splitSetCookieHeader(headers.get('set-cookie') || '')
+      : [])
+
+  return setCookies
+    .map((cookie) => cookie.split(';')[0]?.trim() || '')
+    .filter(Boolean)
+    .join('; ')
+}
+
+async function fetchDashboardCookie(force = false): Promise<string> {
+  if (!force && dashboardCookieCache) return dashboardCookieCache
+  if (!force && dashboardCookiePromise) return dashboardCookiePromise
+
+  dashboardCookiePromise = (async () => {
+    const credentials = dashboardBasicAuthCredentials()
+    if (!credentials) {
+      console.warn('[gateway] Dashboard basic auth credentials unavailable')
+      return ''
+    }
+
+    try {
+      const res = await fetch(`${CLAUDE_DASHBOARD_URL}/auth/password-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'basic',
+          username: credentials.username,
+          password: credentials.password,
+          next: '/',
+        }),
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      })
+
+      if (!res.ok) {
+        console.warn(`[gateway] Dashboard password login returned ${res.status}`)
+        return ''
+      }
+
+      const cookie = cookieHeaderFromResponse(res.headers)
+      if (!cookie) {
+        console.warn('[gateway] Dashboard password login returned no cookies')
+        return ''
+      }
+
+      dashboardCookieCache = cookie
+      return cookie
+    } catch (err) {
+      console.warn(
+        `[gateway] Dashboard password login failed: ${
+          err instanceof Error ? err.message : err
+        }`,
+      )
+      return ''
+    }
+  })()
+
+  try {
+    return await dashboardCookiePromise
+  } finally {
+    dashboardCookiePromise = null
+  }
+}
+
 // ── Types ─────────────────────────────────────────────────────────
 
 export type CoreCapabilities = {
@@ -291,7 +404,9 @@ export async function fetchDashboardToken(options?: {
     // is broken (500), return empty string so protected API calls degrade
     // gracefully — the caller already handles 401/non-ok via safeJson.
     try {
+      const cookie = await fetchDashboardCookie(force)
       const res = await fetch(`${CLAUDE_DASHBOARD_URL}/`, {
+        headers: cookie ? { Cookie: cookie } : undefined,
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       })
       if (!res.ok) {
@@ -361,10 +476,15 @@ export async function dashboardFetch(
       !requestPath.endsWith('/api/dashboard/plugins') &&
       !requestPath.endsWith('/api/dashboard/plugins/rescan')
 
-    if (isProtected && !headers.has('Authorization')) {
+    if (isProtected && !headers.has('Authorization') && !headers.has('Cookie')) {
       const auth = await dashboardAuthHeaders({ force: forceToken })
       for (const [key, value] of Object.entries(auth)) {
         headers.set(key, value)
+      }
+
+      if (!headers.has('Authorization')) {
+        const cookie = await fetchDashboardCookie(forceToken)
+        if (cookie) headers.set('Cookie', cookie)
       }
     }
 
@@ -378,6 +498,7 @@ export async function dashboardFetch(
   let res = await doFetch(false)
   if (res.status === 401) {
     dashboardTokenCache = ''
+    dashboardCookieCache = ''
     res = await doFetch(true)
   }
   return res
