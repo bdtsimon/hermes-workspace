@@ -160,6 +160,14 @@ const PROVIDER_CARDS: Array<{
   authType: 'oauth' | 'api_key' | 'none'
   envKey?: string
 }> = [
+  {
+    id: 'opencode-zen',
+    name: 'OpenCode Zen',
+    logo: '',
+    models: ['deepseek-v4-flash-free'],
+    authType: 'api_key',
+    envKey: 'OPENCODE_ZEN_API_KEY',
+  },
   // Local providers first — zero setup
   {
     id: 'ollama',

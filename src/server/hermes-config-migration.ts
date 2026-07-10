@@ -84,6 +84,7 @@ export type NormalizeHermesConfigInput = {
 }
 
 export const HERMES_PROVIDER_CATALOG: Array<ProviderDef> = [
+  { id: 'opencode-zen', name: 'OpenCode Zen', kind: 'api_key', envKeys: ['OPENCODE_ZEN_API_KEY'], models: [] },
   { id: 'nous', name: 'Nous Portal', kind: 'oauth', envKeys: [], models: [] },
   { id: 'openai-codex', name: 'OpenAI Codex', kind: 'oauth', envKeys: [], models: [] },
   { id: 'anthropic', name: 'Anthropic', kind: 'api_key', envKeys: ['ANTHROPIC_API_KEY'], models: [] },
