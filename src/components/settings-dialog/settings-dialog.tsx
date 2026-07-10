@@ -215,13 +215,24 @@ const PROVIDER_CARDS: Array<{
     id: 'nous',
     name: 'Nous Portal',
     logo: '/providers/nous.png',
+    // Top agentic picks for Hermes (portal proxies 300+ models via
+    // OpenRouter-style ids — every id below verified against the live
+    // listing 2026-07-10). The portal's own hermes-4 models are deliberately
+    // NOT listed: Nous's docs advise against them inside the agent
+    // (chat-tuned, weak tool-calling).
     models: [
       'anthropic/claude-sonnet-4.6',
+      'anthropic/claude-fable-5',
+      'anthropic/claude-opus-4.8',
       'openai/gpt-5.5-pro',
-      'google/gemini-3-pro-preview',
+      'openai/gpt-5.5',
+      'google/gemini-3.1-pro-preview',
+      'google/gemini-3.5-flash',
+      'x-ai/grok-4.5',
       'deepseek/deepseek-v4-pro',
-      'hermes-4-405b',
-      'hermes-4-70b',
+      'moonshotai/kimi-k2.7-code',
+      'qwen/qwen3-coder',
+      'z-ai/glm-5.2',
     ],
     authType: 'oauth',
   },
