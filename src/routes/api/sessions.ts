@@ -21,14 +21,19 @@ import {
   updateLocalSessionTitle,
 } from '../../server/local-session-store'
 
-const WORKSPACE_CONTEXT_PREFIX_RE = /^\s*<workspace_context\b/i
+const WORKSPACE_CONTEXT_TAG_RE = /\s*<workspace_context\b[^>]*\/?>\s*/gi
 
+// Strip-and-keep: remove the workspace_context tag wherever it sits (prefix
+// era or the current suffix placement) and keep the surrounding user text —
+// rejecting the whole string blanked titles/previews for every session that
+// ever carried the tag.
 function cleanSessionDisplayText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   if (!trimmed) return undefined
-  if (WORKSPACE_CONTEXT_PREFIX_RE.test(trimmed)) return undefined
-  return trimmed
+  if (!/<workspace_context\b/i.test(trimmed)) return trimmed
+  const cleaned = trimmed.replace(WORKSPACE_CONTEXT_TAG_RE, '\n').trim()
+  return cleaned || undefined
 }
 
 function cleanGatewaySessionSummary<T extends Record<string, unknown>>(session: T): T {

@@ -28,7 +28,7 @@ export type SessionTitleInfo = {
 const STORAGE_KEY = 'claude.sessionTitles.v1'
 
 const WORKSPACE_CONTEXT_TITLE_REGEX =
-  /^\s*<workspace_context\s+active="true"\s+name="[^"]*"\s+path="[^"]*"\s*\/?>\s*/i
+  /\s*<workspace_context\s+active="true"\s+name="[^"]*"\s+path="[^"]*"\s*\/?>\s*/gi
 
 function cleanStoredTitleCandidate(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
