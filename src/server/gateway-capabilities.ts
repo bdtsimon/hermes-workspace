@@ -392,12 +392,13 @@ function authHeaders(): Record<string, string> {
 export async function fetchDashboardToken(options?: {
   force?: boolean
 }): Promise<string> {
-  // Upstream v2's preferred path: a STATIC bearer from the environment
-  // (HERMES_DASHBOARD_TOKEN = the agent's API_SERVER_KEY — verified accepted
-  // by /api/status). Unlike the boot-ephemeral inline token this value does
-  // not rotate on dashboard restarts, so no scraping and no startup spam.
-  // The HTML scrape below stays as the legacy fallback for setups without
-  // the env var.
+  // Static bearer from the environment — ONLY for setups whose dashboard
+  // actually accepts one (loopback/insecure binds or newer agent builds).
+  // On a GATED basic-auth bind (this deployment) the dashboard authorizes
+  // via the session cookie and rejects static bearers with 401 — setting
+  // HERMES_DASHBOARD_TOKEN there breaks every dashboard call (learned the
+  // hard way: /api/status is unauthenticated, so it 'verified' nothing).
+  // Leave the env unset on gated binds; the cookie flow below is the auth.
   const envToken = (
     process.env.HERMES_DASHBOARD_TOKEN ||
     process.env.CLAUDE_DASHBOARD_TOKEN ||
