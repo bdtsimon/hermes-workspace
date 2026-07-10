@@ -392,6 +392,18 @@ function authHeaders(): Record<string, string> {
 export async function fetchDashboardToken(options?: {
   force?: boolean
 }): Promise<string> {
+  // Upstream v2's preferred path: a STATIC bearer from the environment
+  // (HERMES_DASHBOARD_TOKEN = the agent's API_SERVER_KEY — verified accepted
+  // by /api/status). Unlike the boot-ephemeral inline token this value does
+  // not rotate on dashboard restarts, so no scraping and no startup spam.
+  // The HTML scrape below stays as the legacy fallback for setups without
+  // the env var.
+  const envToken = (
+    process.env.HERMES_DASHBOARD_TOKEN ||
+    process.env.CLAUDE_DASHBOARD_TOKEN ||
+    ''
+  ).trim()
+  if (envToken) return envToken
   const force = options?.force === true
 
   if (!force && dashboardTokenCache) return dashboardTokenCache
