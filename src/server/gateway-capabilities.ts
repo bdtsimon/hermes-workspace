@@ -389,6 +389,8 @@ function authHeaders(): Record<string, string> {
  * HTML. The dashboard injects a fresh ephemeral token at boot, so cached or
  * manually copied env tokens become invalid after restarts.
  */
+let gatedModeNoticeLogged = false
+
 export async function fetchDashboardToken(options?: {
   force?: boolean
 }): Promise<string> {
@@ -405,6 +407,22 @@ export async function fetchDashboardToken(options?: {
     ''
   ).trim()
   if (envToken) return envToken
+  // GATED basic-auth binds never inject the session token into the SPA HTML
+  // (dashboard _require_token: the session COOKIE is the auth there), so
+  // scraping can only fail — skip it and say so once instead of warning on
+  // every call.
+  if (
+    process.env.HERMES_DASHBOARD_BASIC_AUTH_USERNAME &&
+    process.env.HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
+  ) {
+    if (!gatedModeNoticeLogged) {
+      gatedModeNoticeLogged = true
+      console.info(
+        '[gateway] Gated dashboard bind — session token is not injected by design; using cookie auth.',
+      )
+    }
+    return ''
+  }
   const force = options?.force === true
 
   if (!force && dashboardTokenCache) return dashboardTokenCache
