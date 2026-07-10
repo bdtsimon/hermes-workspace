@@ -3,7 +3,11 @@ import { json } from '@tanstack/react-start'
 import { z } from 'zod'
 
 import { isAuthenticated } from '../../server/auth-middleware'
-import { BEARER_TOKEN, CLAUDE_API } from '../../server/gateway-capabilities'
+import {
+  BEARER_TOKEN,
+  CLAUDE_API,
+  dashboardFetch,
+} from '../../server/gateway-capabilities'
 
 const BodySchema = z.object({
   firstUser: z.string().min(1).max(2000),
@@ -61,6 +65,17 @@ export const Route = createFileRoute('/api/session-title')({
             }),
             signal: AbortSignal.timeout(20000),
           })
+          // The gateway records even stateless completions in the session
+          // ledger — delete the entry this title request just minted so
+          // titling a conversation doesn't litter the dashboard with
+          // 'Give this chat session a short title...' sessions.
+          const junkSessionId = res.headers.get('x-hermes-session-id') || ''
+          if (junkSessionId) {
+            void dashboardFetch(
+              `/api/sessions/${encodeURIComponent(junkSessionId)}`,
+              { method: 'DELETE' },
+            ).catch(() => {})
+          }
           if (!res.ok) {
             return json(
               { ok: false, error: `Completion failed (${res.status})` },

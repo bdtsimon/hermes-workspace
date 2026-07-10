@@ -45,6 +45,7 @@ export function ChatEmptyState({
   compact = false,
 }: ChatEmptyStateProps) {
   const [activeProfile, setActiveProfile] = useState<ProfileSummary | null>(null)
+  const [defaultModel, setDefaultModel] = useState('')
 
   useEffect(() => {
     fetch('/api/profiles/list')
@@ -57,6 +58,16 @@ export function ChatEmptyState({
       .catch(() => {
         // silently ignore — profile info is cosmetic
       })
+    // The profile payload carries a stale model snapshot; the config default
+    // (agent truth) is what a new session will actually run on.
+    fetch('/api/claude-config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (typeof data?.activeModel === 'string' && data.activeModel) {
+          setDefaultModel(data.activeModel)
+        }
+      })
+      .catch(() => {})
   }, [])
 
   return (
@@ -100,7 +111,9 @@ export function ChatEmptyState({
         {activeProfile && (
           <span className="mt-2 text-xs" style={{ color: 'var(--theme-accent)' }}>
             {activeProfile.name}
-            {activeProfile.model ? ` · ${activeProfile.model}` : ''}
+            {defaultModel || activeProfile.model
+              ? ` · ${defaultModel || activeProfile.model}`
+              : ''}
           </span>
         )}
 

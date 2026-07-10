@@ -1,5 +1,6 @@
 'use client'
 
+import { useQueryClient } from '@tanstack/react-query'
 import { HugeiconsIcon } from '@hugeicons/react'
 import {
   ArrowLeft01Icon,
@@ -369,6 +370,7 @@ type OAuthPollResponse = {
 }
 
 function HermesContent() {
+  const queryClient = useQueryClient()
   const configAvailable = useFeatureAvailable('config')
   const [activeProvider, setActiveProvider] = useState('')
   const [activeModel, setActiveModel] = useState('')
@@ -522,6 +524,11 @@ function HermesContent() {
       const r = (await res.json()) as { message?: string }
       setMsg(r.message || 'Saved')
       await refreshConfig()
+      // Model/config changes must reach every cached consumer immediately
+      // (composer pill, empty-state hero, chat screens) — not after each
+      // query's staleTime, which left a fresh New Session advertising the
+      // previous model until a manual page refresh.
+      void queryClient.invalidateQueries()
       setTimeout(() => setMsg(null), 3000)
     } catch {
       setMsg('Failed to save')
