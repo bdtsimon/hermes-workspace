@@ -52,6 +52,8 @@ export function ProviderLogo({
     minimax: 'minimax.png',
     zai: 'zhipu.png',
     zhipu: 'zhipu.png',
+    'opencode-zen': 'opencode-zen.png',
+    xiaomi: 'xiaomi.png',
   }
 
   const file = fileMap[provider]
