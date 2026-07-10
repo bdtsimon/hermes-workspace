@@ -122,34 +122,55 @@ function readErrorDetail(data: unknown, fallback: string): string {
 }
 
 async function fetchAgentConfig(): Promise<Record<string, unknown> | null> {
+  // Config body + model/info are independent — fetch them concurrently
+  // (sequential awaits made the settings dialog visibly lag).
+  const [cfgSettled, infoSettled] = await Promise.allSettled([
+    dashboardFetch('/api/config'),
+    dashboardFetch('/api/model/info'),
+  ])
   let cfg: Record<string, unknown> | null = null
-  try {
-    const res = await dashboardFetch('/api/config')
-    if (res.ok) {
-      const data: unknown = await res.json().catch(() => null)
-      if (data && typeof data === 'object' && !Array.isArray(data)) {
-        cfg = data as Record<string, unknown>
-      }
+  if (cfgSettled.status === 'fulfilled' && cfgSettled.value.ok) {
+    const data: unknown = await cfgSettled.value.json().catch(() => null)
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      cfg = data as Record<string, unknown>
     }
-  } catch {
-    return null
   }
   if (!cfg) return null
   // The agent's web normalization (_normalize_config_for_web) flattens `model`
   // to a bare string and DROPS the provider key entirely, so the config body
   // alone can never yield the active provider. /api/model/info is the agent's
   // canonical live pair — overlay it as the flat form the parser reads.
-  try {
-    const res = await dashboardFetch('/api/model/info')
-    if (res.ok) {
-      const info = asRecord(await res.json().catch(() => null))
-      const provider = typeof info.provider === 'string' ? info.provider.trim() : ''
-      const model = typeof info.model === 'string' ? info.model.trim() : ''
-      if (provider) cfg.provider = provider
-      if (model) cfg.model = model
-    }
-  } catch {}
+  if (infoSettled.status === 'fulfilled' && infoSettled.value.ok) {
+    const info = asRecord(await infoSettled.value.json().catch(() => null))
+    const provider = typeof info.provider === 'string' ? info.provider.trim() : ''
+    const model = typeof info.model === 'string' ? info.model.trim() : ''
+    if (provider) cfg.provider = provider
+    if (model) cfg.model = model
+  }
   return cfg
+}
+
+// OAuth credentials live AGENT-side: the dashboard-brokered device flow
+// stores them in the agent's auth store, not in the workspace's
+// auth-profiles.json — the agent's own logged_in state is the truth the
+// provider badges overlay (and it survives a page refresh).
+async function fetchAgentOAuthMap(): Promise<Record<string, boolean> | null> {
+  try {
+    const res = await dashboardFetch('/api/providers/oauth')
+    if (!res.ok) return null
+    const data = asRecord(await res.json().catch(() => null))
+    if (!Array.isArray(data.providers)) return null
+    const map: Record<string, boolean> = {}
+    for (const entry of data.providers) {
+      const rec = asRecord(entry)
+      const id = typeof rec.id === 'string' ? rec.id : ''
+      const status = asRecord(rec.status)
+      if (id) map[id] = status.logged_in === true
+    }
+    return map
+  } catch {
+    return null
+  }
 }
 
 async function putAgentConfig(
@@ -250,8 +271,12 @@ export async function handleHermesConfigGet({
   await ensureDiscovery()
   const files = readHermesConfigFiles(paths)
   // Prefer the agent's live config; fall back to the local file only when the
-  // dashboard cannot be reached (the file may be a stale mirror).
-  const agentConfig = await fetchAgentConfig()
+  // dashboard cannot be reached (the file may be a stale mirror). OAuth state
+  // is independent — fetch both concurrently.
+  const [agentConfig, agentOAuth] = await Promise.all([
+    fetchAgentConfig(),
+    fetchAgentOAuthMap(),
+  ])
   const state = normalizeHermesConfigState({
     paths,
     config: agentConfig ?? files.config,
@@ -260,27 +285,6 @@ export async function handleHermesConfigGet({
     localProviders: getDiscoveryStatus(),
     localModels: getDiscoveredModels(),
   })
-
-  // OAuth credentials live AGENT-side: the dashboard-brokered device flow
-  // stores them in the agent's auth store, not in the workspace's
-  // auth-profiles.json — overlay the agent's own logged_in state so the
-  // provider badges tell the truth (and survive a page refresh).
-  let agentOAuth: Record<string, boolean> | null = null
-  try {
-    const res = await dashboardFetch('/api/providers/oauth')
-    if (res.ok) {
-      const data = asRecord(await res.json().catch(() => null))
-      if (Array.isArray(data.providers)) {
-        agentOAuth = {}
-        for (const entry of data.providers) {
-          const rec = asRecord(entry)
-          const id = typeof rec.id === 'string' ? rec.id : ''
-          const status = asRecord(rec.status)
-          if (id) agentOAuth[id] = status.logged_in === true
-        }
-      }
-    }
-  } catch {}
 
   // Legacy /api/claude-config consumers read provider.maskedKeys; alias it.
   const providers = state.providers.map((p) => {

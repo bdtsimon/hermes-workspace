@@ -173,6 +173,16 @@ const PROVIDER_CARDS: Array<{
       'deepseek-v4-pro',
       'glm-5.2',
       'kimi-k2.7-code',
+      'claude-fable-5',
+      'claude-sonnet-5',
+      'claude-opus-4.8',
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5.3-codex',
+      'gemini-3.5-flash',
+      'qwen3.7-max',
+      'minimax-m3',
+      'grok-4.5',
     ],
     authType: 'api_key',
     envKey: 'OPENCODE_ZEN_API_KEY',
@@ -235,6 +245,11 @@ const PROVIDER_CARDS: Array<{
       'z-ai/glm-5',
       'moonshotai/kimi-k2.6',
       'qwen/qwen3-coder',
+      'anthropic/claude-opus-4.8',
+      'openai/gpt-5',
+      'x-ai/grok-4.5',
+      'deepseek/deepseek-v4-pro',
+      'moonshotai/kimi-k2.7-code',
     ],
     authType: 'api_key',
     envKey: 'OPENROUTER_API_KEY',
@@ -249,6 +264,8 @@ const PROVIDER_CARDS: Array<{
       'glm-5.2',
       'glm-5-turbo',
       'glm-4.7',
+      'glm-5.1',
+      'glm-4.5-x',
     ],
     authType: 'api_key',
     envKey: 'GLM_API_KEY',
@@ -286,9 +303,13 @@ export function getProviderClickAction(input: {
   providerId?: string
   authType: 'oauth' | 'api_key' | 'none'
   hasKey: boolean
+  oauthConnected?: boolean
 }): ProviderClickAction {
   if (input.providerId === 'custom') return 'custom'
-  if (input.authType === 'oauth') return 'oauth'
+  // An already-authenticated OAuth provider behaves like a keyed provider:
+  // click SELECTS it (provider + models) instead of forcing a re-login; the
+  // OAuth panel stays reachable while not connected.
+  if (input.authType === 'oauth') return input.oauthConnected ? 'select' : 'oauth'
   if (input.authType === 'none') return 'local'
   return input.hasKey ? 'select' : 'ignore'
 }
@@ -346,6 +367,9 @@ function HermesContent() {
   const [_saving, setSaving] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   const [configuredKeys, setConfiguredKeys] = useState<Record<string, string>>(
+    {},
+  )
+  const [oauthConnected, setOauthConnected] = useState<Record<string, boolean>>(
     {},
   )
   const [memEnabled, setMemEnabled] = useState(true)
@@ -428,6 +452,11 @@ function HermesContent() {
           keys[envKey] = p.maskedCredentials?.[envKey] || '••••'
         }
         setConfiguredKeys(keys)
+        const oauth: Record<string, boolean> = {}
+        for (const p of d.providers || []) {
+          if (p.kind === 'oauth') oauth[p.id] = p.authenticated === true
+        }
+        setOauthConnected(oauth)
         // Load custom provider config (may be stored as 'custom' or legacy 'manifest')
         const cfgProviders = (d.config?.providers as Record<string, any>) || {}
         const customCfg = cfgProviders['custom'] || cfgProviders['manifest'] || {}
@@ -457,6 +486,11 @@ function HermesContent() {
       keys[envKey] = p.maskedCredentials?.[envKey] || '••••'
     }
     setConfiguredKeys(keys)
+    const oauth: Record<string, boolean> = {}
+    for (const p of d.providers || []) {
+      if (p.kind === 'oauth') oauth[p.id] = p.authenticated === true
+    }
+    setOauthConnected(oauth)
   }
 
   const save = async (
@@ -698,7 +732,8 @@ function HermesContent() {
               (p.authType === 'none' && localOnline) ||
               (p.authType === 'api_key' &&
                 !!p.envKey &&
-                !!configuredKeys[p.envKey])
+                !!configuredKeys[p.envKey]) ||
+              (p.authType === 'oauth' && oauthConnected[p.id] === true)
             const missingKey =
               p.authType === 'api_key' && !verified && p.id !== 'custom'
             // hasKey gates click — keep OAuth + local clickable (existing
@@ -717,6 +752,7 @@ function HermesContent() {
                     providerId: p.id,
                     authType: p.authType,
                     hasKey,
+                    oauthConnected: oauthConnected[p.id] === true,
                   })
                   if (action === 'oauth') {
                     resetOAuthState(p.id)
@@ -759,7 +795,8 @@ function HermesContent() {
                       (lp) => lp.id === p.id,
                     )
                     if (disc?.online) return '🟢 Detected'
-                    if (p.authType === 'oauth') return 'OAuth'
+                    if (p.authType === 'oauth')
+                      return oauthConnected[p.id] === true ? 'Connected' : 'OAuth'
                     if (p.authType === 'none') return 'Local'
                     return hasKey ? 'Key set' : 'Key required'
                   })()}
