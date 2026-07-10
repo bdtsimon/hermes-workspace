@@ -193,10 +193,53 @@ export function useAutoSessionTitle({
     if (lastAttemptRef.current[friendlyId] === signature) return
     lastAttemptRef.current[friendlyId] = signature
     updateSessionTitleState(friendlyId, { status: 'generating', error: null })
-    mutate({
-      friendlyId,
-      sessionKey: sessionKey ?? friendlyId,
-      title: proposedTitle,
-    })
-  }, [friendlyId, isPending, mutate, proposedTitle, sessionKey, shouldGenerate])
+    // Ask the model for a SHORT contextual title (the agent's TUI gets these
+    // from its title_generation aux task; api_server sessions never did).
+    // Falls back to the truncated first user message when generation fails.
+    const firstUser = getFirstUserMessage(messages)
+    const firstAssistantMsg = messages.find(
+      (message) =>
+        message.role === 'assistant' &&
+        textFromMessage(message).trim().length > 0,
+    )
+    const firstAssistant = firstAssistantMsg
+      ? textFromMessage(firstAssistantMsg).trim().slice(0, 800)
+      : ''
+    void (async () => {
+      let title = proposedTitle
+      try {
+        const res = await fetch('/api/session-title', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            firstUser: firstUser.slice(0, 800),
+            firstAssistant,
+          }),
+        })
+        if (res.ok) {
+          const data = (await res.json().catch(() => ({}))) as {
+            title?: string
+          }
+          if (data.title && data.title.trim()) {
+            title = truncateTitle(data.title)
+          }
+        }
+      } catch {
+        // keep the fallback title
+      }
+      mutate({
+        friendlyId,
+        sessionKey: sessionKey ?? friendlyId,
+        title,
+      })
+    })()
+  }, [
+    friendlyId,
+    isPending,
+    messages,
+    mutate,
+    proposedTitle,
+    sessionKey,
+    shouldGenerate,
+  ])
 }

@@ -20,6 +20,7 @@ import {
   listLocalSessions,
   updateLocalSessionTitle,
 } from '../../server/local-session-store'
+import { dashboardFetch } from '../../server/gateway-capabilities'
 
 const WORKSPACE_CONTEXT_TAG_RE = /\s*<workspace_context\b[^>]*\/?>\s*/gi
 
@@ -262,19 +263,60 @@ export const Route = createFileRoute('/api/sessions')({
           }
 
           if (capabilities.dashboard.available && !capabilities.enhancedChat) {
-            return json({
-              ok: true,
-              sessionKey,
-              entry: {
-                key: sessionKey,
-                id: sessionKey,
-                title: label || sessionKey,
-                label: label || sessionKey,
-                derivedTitle: label || sessionKey,
-                updatedAt: Date.now(),
-              },
-              updated: false,
-            })
+            // Rename directly through the agent dashboard (PATCH
+            // /api/sessions/{id} resolves friendly ids too). The previous
+            // branch returned a fake ok without persisting anything, so
+            // workspace-set titles never reached the agent and sessions
+            // stayed Untitled/raw-first-message on the native dashboard.
+            try {
+              const res = await dashboardFetch(
+                `/api/sessions/${encodeURIComponent(sessionKey)}`,
+                {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ title: label ?? '' }),
+                },
+              )
+              const data = (await res.json().catch(() => ({}))) as Record<
+                string,
+                unknown
+              >
+              if (!res.ok) {
+                return json(
+                  {
+                    ok: false,
+                    error:
+                      typeof data.detail === 'string'
+                        ? data.detail
+                        : 'Rename failed',
+                  },
+                  { status: res.status },
+                )
+              }
+              const savedTitle =
+                typeof data.title === 'string' && data.title
+                  ? data.title
+                  : label || sessionKey
+              return json({
+                ok: true,
+                sessionKey,
+                entry: {
+                  key: sessionKey,
+                  id: sessionKey,
+                  title: savedTitle,
+                  label: savedTitle,
+                  derivedTitle: savedTitle,
+                  updatedAt: Date.now(),
+                },
+                updated: true,
+                source: 'dashboard',
+              })
+            } catch {
+              return json(
+                { ok: false, error: 'Agent dashboard unreachable' },
+                { status: 502 },
+              )
+            }
           }
 
           const session = await updateSession(sessionKey, {
