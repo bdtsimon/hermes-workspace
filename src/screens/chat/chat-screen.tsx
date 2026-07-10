@@ -1058,7 +1058,28 @@ export function ChatScreen({
   }, [modelsQuery.data])
 
   const gatewayModel = currentModelQuery.data || ''
-  const currentModel = _localModelOverride || gatewayModel
+  // New chats show the CONFIG default: /api/session-status answers with the
+  // last live session's model, so after a default change the pill kept
+  // advertising the previous model until the first message created the
+  // session (operator-reported).
+  const configDefaultQuery = useQuery({
+    queryKey: ['hermes-config', 'default-model'],
+    queryFn: async () => {
+      try {
+        const res = await fetch('/api/hermes-config')
+        if (!res.ok) return ''
+        const data = (await res.json()) as { activeModel?: string }
+        return typeof data.activeModel === 'string' ? data.activeModel : ''
+      } catch {
+        return ''
+      }
+    },
+    staleTime: 30_000,
+    retry: false,
+  })
+  const currentModel =
+    _localModelOverride ||
+    (isNewChat ? configDefaultQuery.data || gatewayModel : gatewayModel)
 
   // Ref so sendMessage can always read latest thinkingLevel without being in deps
   const thinkingLevelRef = useRef<ThinkingLevel>(thinkingLevel)

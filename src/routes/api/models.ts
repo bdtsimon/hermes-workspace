@@ -27,6 +27,43 @@ type ModelEntry = {
   [key: string]: unknown
 }
 
+// Static fallback catalog for the chat model switcher: API-key providers
+// (opencode-zen / nous / openrouter / zai) enumerate no per-provider models
+// through the agent, which left the switcher with only the active model.
+// Ids mirror the provider tiles (verified against live sources 2026-07-10);
+// live sources merged in the handler still win (mergeModelEntries dedupes).
+const FALLBACK_PROVIDER_MODELS: Array<ModelEntry> = Object.entries({
+  'opencode-zen': [
+    'deepseek-v4-flash-free', 'big-pickle', 'nemotron-3-ultra-free',
+    'mimo-v2.5-free', 'north-mini-code-free', 'deepseek-v4-pro', 'glm-5.2',
+    'kimi-k2.7-code', 'claude-fable-5', 'claude-sonnet-5', 'claude-opus-4.8',
+    'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gemini-3.5-flash', 'qwen3.7-max',
+    'minimax-m3', 'grok-4.5',
+  ],
+  nous: [
+    'anthropic/claude-sonnet-4.6', 'anthropic/claude-fable-5',
+    'anthropic/claude-opus-4.8', 'openai/gpt-5.5-pro', 'openai/gpt-5.5',
+    'google/gemini-3.1-pro-preview', 'google/gemini-3.5-flash',
+    'x-ai/grok-4.5', 'deepseek/deepseek-v4-pro', 'moonshotai/kimi-k2.7-code',
+    'qwen/qwen3-coder', 'z-ai/glm-5.2',
+  ],
+  openrouter: [
+    'auto', 'deepseek/deepseek-v4-flash', 'deepseek/deepseek-r1',
+    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+    'google/gemini-3.1-pro-preview', 'google/gemini-2.5-pro',
+    'anthropic/claude-sonnet-4.6', 'anthropic/claude-opus-4.8',
+    'openai/gpt-5', 'x-ai/grok-4.5', 'deepseek/deepseek-v4-pro',
+    'moonshotai/kimi-k2.6', 'moonshotai/kimi-k2.7-code', 'qwen/qwen3-coder',
+    'z-ai/glm-5',
+  ],
+  zai: [
+    'glm-4.7-flash', 'glm-4.5-flash', 'glm-5.2', 'glm-5-turbo', 'glm-4.7',
+    'glm-5.1', 'glm-4.5-x',
+  ],
+}).flatMap(([provider, ids]) =>
+  ids.map((id) => ({ id, name: id, provider })),
+)
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === 'object' && !Array.isArray(value))
     return value as Record<string, unknown>
@@ -466,6 +503,10 @@ export const Route = createFileRoute('/api/models')({
           for (const m of localModels) {
             ensureProviderInConfig(m.provider)
           }
+
+          // Per-provider fallback so the switcher is never empty for the
+          // known API-key providers (live entries above win the dedupe).
+          models = mergeModelEntries(models, FALLBACK_PROVIDER_MODELS)
 
           const configuredProviders = Array.from(
             new Set(
