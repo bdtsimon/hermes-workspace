@@ -85,16 +85,34 @@ export function useAutoSessionTitle({
     if (!sessionKey || sessionKey === 'new') return false
     if (!proposedTitle) return false
     if (!hasAssistantResponse(messages)) return false
-    if (activeSession?.label && !isGenericTitle(activeSession.label))
-      return false
-    if (activeSession?.title && !isGenericTitle(activeSession.title))
-      return false
-    if (
-      activeSession?.derivedTitle &&
-      !isGenericTitle(activeSession.derivedTitle)
-    ) {
-      return false
+    // Labels DERIVED from the first user message (the pre-LLM behaviour and
+    // the agent's own raw naming) must not block generation — otherwise every
+    // session that already shows its first message as a label is considered
+    // \"titled\" and the contextual title never fires.
+    const firstUserStem = proposedTitle
+      .replace(/…$/, '')
+      .trim()
+      .toLowerCase()
+    const isFirstMessageDerived = (value?: string) => {
+      if (!value || !firstUserStem) return false
+      const normalized = value
+        .replace(/\s+/g, ' ')
+        .replace(/…$/, '')
+        .trim()
+        .toLowerCase()
+      if (!normalized) return false
+      return (
+        normalized.startsWith(firstUserStem.slice(0, 24)) ||
+        firstUserStem.startsWith(normalized.slice(0, 24))
+      )
     }
+    const blocksGeneration = (value?: string) =>
+      Boolean(value) &&
+      !isGenericTitle(value as string) &&
+      !isFirstMessageDerived(value)
+    if (blocksGeneration(activeSession?.label)) return false
+    if (blocksGeneration(activeSession?.title)) return false
+    if (blocksGeneration(activeSession?.derivedTitle)) return false
     if (titleInfo.source === 'manual' && titleInfo.title) return false
     if (
       titleInfo.status === 'ready' &&

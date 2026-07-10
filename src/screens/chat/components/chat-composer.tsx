@@ -1225,8 +1225,22 @@ function ChatComposerComponent({
   }, [modelsQuery.data])
   // Derive the label directly from the store so navigation between sessions
   // updates without a render-window flash from a stale React-state mirror.
+  // For a NEW chat, session-status answers with the LAST live session's
+  // model, so the config default (agent truth via /api/claude-config) must
+  // win — otherwise the pill keeps advertising the previous model until the
+  // first message creates the session.
+  const configDefaultModel =
+    typeof (sttConfigQuery.data as { activeModel?: unknown } | undefined)
+      ?.activeModel === 'string'
+      ? ((sttConfigQuery.data as { activeModel: string }).activeModel || '')
+      : ''
+  const isBlankSession = !sessionKey || sessionKey === 'new' || sessionKey === 'main'
   const modelButtonLabel =
-    persistedSessionModel || currentModel || configuredModel || '⚕ Hermes Agent'
+    persistedSessionModel ||
+    (isBlankSession
+      ? configDefaultModel || currentModel || configuredModel
+      : currentModel || configDefaultModel || configuredModel) ||
+    '⚕ Hermes Agent'
 
   // Measure composer height and set CSS variable for scroll padding
   useLayoutEffect(() => {

@@ -240,7 +240,28 @@ export const Route = createFileRoute('/api/sessions')({
 
           const localSession = getLocalSession(sessionKey)
           if (localSession) {
-            if (label) updateLocalSessionTitle(sessionKey, label)
+            if (label) {
+              updateLocalSessionTitle(sessionKey, label)
+              // Workspace chats exist in BOTH stores: the local session store
+              // AND the agent's session DB (the gateway records api_server
+              // sessions). Best-effort propagate the rename so the native
+              // dashboard shows the same title instead of the raw first
+              // message.
+              if (capabilities.dashboard.available) {
+                try {
+                  await dashboardFetch(
+                    `/api/sessions/${encodeURIComponent(sessionKey)}`,
+                    {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ title: label }),
+                    },
+                  )
+                } catch {
+                  // local rename already applied; dashboard sync is optional
+                }
+              }
+            }
             return json({
               ok: true,
               sessionKey,
