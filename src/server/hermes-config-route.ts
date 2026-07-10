@@ -122,16 +122,34 @@ function readErrorDetail(data: unknown, fallback: string): string {
 }
 
 async function fetchAgentConfig(): Promise<Record<string, unknown> | null> {
+  let cfg: Record<string, unknown> | null = null
   try {
     const res = await dashboardFetch('/api/config')
-    if (!res.ok) return null
-    const data: unknown = await res.json().catch(() => null)
-    return data && typeof data === 'object' && !Array.isArray(data)
-      ? (data as Record<string, unknown>)
-      : null
+    if (res.ok) {
+      const data: unknown = await res.json().catch(() => null)
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        cfg = data as Record<string, unknown>
+      }
+    }
   } catch {
     return null
   }
+  if (!cfg) return null
+  // The agent's web normalization (_normalize_config_for_web) flattens `model`
+  // to a bare string and DROPS the provider key entirely, so the config body
+  // alone can never yield the active provider. /api/model/info is the agent's
+  // canonical live pair — overlay it as the flat form the parser reads.
+  try {
+    const res = await dashboardFetch('/api/model/info')
+    if (res.ok) {
+      const info = asRecord(await res.json().catch(() => null))
+      const provider = typeof info.provider === 'string' ? info.provider.trim() : ''
+      const model = typeof info.model === 'string' ? info.model.trim() : ''
+      if (provider) cfg.provider = provider
+      if (model) cfg.model = model
+    }
+  } catch {}
+  return cfg
 }
 
 async function putAgentConfig(
@@ -243,11 +261,41 @@ export async function handleHermesConfigGet({
     localModels: getDiscoveredModels(),
   })
 
+  // OAuth credentials live AGENT-side: the dashboard-brokered device flow
+  // stores them in the agent's auth store, not in the workspace's
+  // auth-profiles.json — overlay the agent's own logged_in state so the
+  // provider badges tell the truth (and survive a page refresh).
+  let agentOAuth: Record<string, boolean> | null = null
+  try {
+    const res = await dashboardFetch('/api/providers/oauth')
+    if (res.ok) {
+      const data = asRecord(await res.json().catch(() => null))
+      if (Array.isArray(data.providers)) {
+        agentOAuth = {}
+        for (const entry of data.providers) {
+          const rec = asRecord(entry)
+          const id = typeof rec.id === 'string' ? rec.id : ''
+          const status = asRecord(rec.status)
+          if (id) agentOAuth[id] = status.logged_in === true
+        }
+      }
+    }
+  } catch {}
+
   // Legacy /api/claude-config consumers read provider.maskedKeys; alias it.
-  const providers = state.providers.map((p) => ({
-    ...p,
-    maskedKeys: p.maskedCredentials,
-  }))
+  const providers = state.providers.map((p) => {
+    const base = { ...p, maskedKeys: p.maskedCredentials }
+    if (p.kind === 'oauth' && agentOAuth && agentOAuth[p.id] === true) {
+      return {
+        ...base,
+        authenticated: true,
+        configured: true,
+        available: true,
+        authSource: 'auth-profiles' as const,
+      }
+    }
+    return base
+  })
 
   return Response.json({
     ...state,
