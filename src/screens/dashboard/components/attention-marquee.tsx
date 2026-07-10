@@ -97,7 +97,17 @@ export function AttentionMarquee({
               if (item.source === 'cron') navigate({ to: '/jobs' })
               else if (item.source === 'config')
                 navigate({ to: '/settings', search: {} })
-              else navigate({ to: '/jobs' })
+              else if (item.source === 'log') {
+                // Agent log warnings live on the native dashboard — the
+                // workspace has no logs surface, and the /jobs fallback sent
+                // users to an empty page (operator-reported). Same host,
+                // dashboard port.
+                window.open(
+                  `${window.location.protocol}//${window.location.hostname}:9119/logs`,
+                  '_blank',
+                  'noopener,noreferrer',
+                )
+              } else navigate({ to: '/jobs' })
             }
             return (
               <button
