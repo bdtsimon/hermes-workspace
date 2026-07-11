@@ -58,8 +58,25 @@ function isDailyMemoryPath(pathValue: string): boolean {
   return /^memories?\/\d{4}-\d{2}-\d{2}\.md$/.test(pathValue)
 }
 
+// Root-level files the agent auto-injects each session — its persona (SOUL.md),
+// operating rules (AGENTS.md), operator profile (USER.md) and top-level memory
+// (MEMORY.md). Shown in their own group, in this order, so the files that shape
+// the agent are visible alongside its running memory under memories/.
+const ROOT_CONFIG_ORDER = ['SOUL.md', 'AGENTS.md', 'USER.md', 'MEMORY.md']
+
 function splitFiles(files: Array<MemoryFileMeta>) {
-  const rootMemory = files.find((file) => file.path === 'MEMORY.md') || null
+  const configFiles = files
+    .filter((file) => !file.path.includes('/'))
+    .sort((a, b) => {
+      const ai = ROOT_CONFIG_ORDER.indexOf(a.path)
+      const bi = ROOT_CONFIG_ORDER.indexOf(b.path)
+      if (ai !== -1 || bi !== -1) {
+        if (ai === -1) return 1
+        if (bi === -1) return -1
+        return ai - bi
+      }
+      return a.path.localeCompare(b.path)
+    })
   const memoryFiles = files
     .filter(
       (file) =>
@@ -75,7 +92,7 @@ function splitFiles(files: Array<MemoryFileMeta>) {
       )
     })
 
-  return { rootMemory, memoryFiles }
+  return { configFiles, memoryFiles }
 }
 
 function highlightMatch(
@@ -123,16 +140,19 @@ export function MemoryBrowserScreen() {
   })
 
   const files = filesQuery.data?.files ?? []
-  const { rootMemory, memoryFiles } = useMemo(() => splitFiles(files), [files])
+  const { configFiles, memoryFiles } = useMemo(
+    () => splitFiles(files),
+    [files],
+  )
 
   useEffect(() => {
     if (selectedPath) return
-    if (rootMemory) {
-      setSelectedPath(rootMemory.path)
+    if (configFiles[0]) {
+      setSelectedPath(configFiles[0].path)
       return
     }
     if (memoryFiles[0]) setSelectedPath(memoryFiles[0].path)
-  }, [selectedPath, rootMemory, memoryFiles])
+  }, [selectedPath, configFiles, memoryFiles])
 
   const contentQuery = useQuery({
     queryKey: ['memory', 'read', selectedPath],
@@ -171,10 +191,10 @@ export function MemoryBrowserScreen() {
 
   const fileItems = useMemo(() => {
     const items: Array<MemoryFileMeta> = []
-    if (rootMemory) items.push(rootMemory)
+    items.push(...configFiles)
     items.push(...memoryFiles)
     return items
-  }, [rootMemory, memoryFiles])
+  }, [configFiles, memoryFiles])
   const selectedFileMeta = useMemo(
     () => fileItems.find((file) => file.path === selectedPath) ?? null,
     [fileItems, selectedPath],
@@ -368,14 +388,22 @@ export function MemoryBrowserScreen() {
               )}
             >
               <div className="max-h-72 space-y-1 overflow-y-auto pr-1 md:h-full md:max-h-none">
-                {rootMemory ? (
-                  <FileRow
-                    file={rootMemory}
-                    selected={selectedPath === rootMemory.path}
-                    onSelect={(pathValue) => {
-                      trySelectFile(pathValue)
-                    }}
-                  />
+                {configFiles.length > 0 ? (
+                  <>
+                    <div className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-primary-400 dark:text-neutral-500">
+                      agent config (auto-injected)
+                    </div>
+                    {configFiles.map((file) => (
+                      <FileRow
+                        key={file.path}
+                        file={file}
+                        selected={selectedPath === file.path}
+                        onSelect={(pathValue) => {
+                          trySelectFile(pathValue)
+                        }}
+                      />
+                    ))}
+                  </>
                 ) : null}
 
                 <div className="px-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-primary-400 dark:text-neutral-500">
