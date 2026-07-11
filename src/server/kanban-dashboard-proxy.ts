@@ -22,12 +22,15 @@
  * This module is only used when `caps.kanban === true`. Otherwise
  * kanban-backend.ts falls through to the local file-backed store.
  *
+ * Auth: all calls go through the shared `dashboardFetch` channel from
+ * gateway-capabilities — on loopback binds that injects the scraped
+ * session token, on GATED basic-auth binds it performs the cookie
+ * login. The previous hand-rolled header builder sent a bare (often
+ * empty) bearer, which gated dashboards reject with 401 `no_cookie`.
+ *
  * See v2.3.0 plan.
  */
-import {
-  CLAUDE_DASHBOARD_URL,
-  fetchDashboardToken,
-} from './gateway-capabilities'
+import { dashboardFetch } from './gateway-capabilities'
 
 const PROXY_TIMEOUT_MS = 10_000
 
@@ -53,44 +56,29 @@ export type DashboardKanbanBoardResponse = {
   }>
 }
 
-/**
- * Build headers for dashboard kanban API calls. The plugin route is
- * unauthenticated by design (loopback only), but we still pass the
- * dashboard session token if we have one — some setups proxy the
- * dashboard behind auth that requires it.
- */
-async function buildHeaders(): Promise<Record<string, string>> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  }
-  try {
-    const token = await fetchDashboardToken()
-    if (token) headers.Authorization = `Bearer ${token}`
-  } catch {
-    // Token fetch is best-effort. The plugin route works without it
-    // on standard loopback installs.
-  }
-  return headers
-}
-
-function dashboardUrl(path: string, params: Record<string, string | undefined> = {}): string {
-  const base = CLAUDE_DASHBOARD_URL.replace(/\/+$/, '')
-  const url = new URL(`${base}${path}`)
+function withParams(
+  path: string,
+  params: Record<string, string | undefined> = {},
+): string {
+  const search = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== '') url.searchParams.set(key, value)
+    if (value !== undefined && value !== '') search.set(key, value)
   }
-  return url.toString()
+  const query = search.toString()
+  return query ? `${path}?${query}` : path
 }
 
-async function dashboardFetch<T>(
+async function proxyFetch<T>(
   path: string,
   init: RequestInit = {},
   params: Record<string, string | undefined> = {},
 ): Promise<T> {
-  const headers = await buildHeaders()
-  const res = await fetch(dashboardUrl(path, params), {
+  const res = await dashboardFetch(withParams(path, params), {
     ...init,
-    headers: { ...headers, ...(init.headers || {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init.headers || {}),
+    },
     signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
   })
   if (!res.ok) {
@@ -106,7 +94,7 @@ async function dashboardFetch<T>(
 export function fetchDashboardKanbanBoard(
   board?: string,
 ): Promise<DashboardKanbanBoardResponse> {
-  return dashboardFetch<DashboardKanbanBoardResponse>(
+  return proxyFetch<DashboardKanbanBoardResponse>(
     '/api/plugins/kanban/board',
     {},
     board ? { board } : {},
@@ -119,7 +107,7 @@ export async function fetchDashboardKanbanTask(
   board?: string,
 ): Promise<DashboardKanbanTask | null> {
   try {
-    const wrapped = await dashboardFetch<{ task?: DashboardKanbanTask }>(
+    const wrapped = await proxyFetch<{ task?: DashboardKanbanTask }>(
       `/api/plugins/kanban/tasks/${encodeURIComponent(taskId)}`,
       {},
       board ? { board } : {},
@@ -147,7 +135,7 @@ export async function createDashboardKanbanTask(
   input: CreateDashboardKanbanTaskInput,
   board?: string,
 ): Promise<DashboardKanbanTask> {
-  const wrapped = await dashboardFetch<{ task: DashboardKanbanTask }>(
+  const wrapped = await proxyFetch<{ task: DashboardKanbanTask }>(
     '/api/plugins/kanban/tasks',
     {
       method: 'POST',
@@ -172,7 +160,7 @@ export async function updateDashboardKanbanTask(
   updates: UpdateDashboardKanbanTaskInput,
   board?: string,
 ): Promise<DashboardKanbanTask> {
-  const wrapped = await dashboardFetch<{ task: DashboardKanbanTask }>(
+  const wrapped = await proxyFetch<{ task: DashboardKanbanTask }>(
     `/api/plugins/kanban/tasks/${encodeURIComponent(taskId)}`,
     {
       method: 'PATCH',
@@ -199,5 +187,5 @@ export function listDashboardKanbanBoards(): Promise<{
   boards: Array<DashboardKanbanBoard>
   current: string
 }> {
-  return dashboardFetch('/api/plugins/kanban/boards')
+  return proxyFetch('/api/plugins/kanban/boards')
 }
