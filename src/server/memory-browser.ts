@@ -21,9 +21,16 @@ export type MemorySearchMatch = {
   text: string
 }
 
+// Root-level files the agent auto-injects each session — the persona/operating
+// identity (SOUL.md), the operating rules (AGENTS.md) and the operator profile
+// (USER.md), plus the top-level MEMORY.md. Surfaced in the Memory tab so the
+// operator can see and edit the files that actually shape the agent, not only
+// its running memory under memories/.
+const ROOT_MEMORY_FILES = ['SOUL.md', 'AGENTS.md', 'USER.md', 'MEMORY.md']
+
 function isBrowserMemoryPath(relativePath: string): boolean {
   return (
-    relativePath === 'MEMORY.md' ||
+    ROOT_MEMORY_FILES.includes(relativePath) ||
     relativePath.startsWith('memory/') ||
     relativePath.startsWith('memories/')
   )
@@ -127,8 +134,15 @@ function walkWorkspaceDir(
 }
 
 function compareMemoryFiles(a: MemoryFileMeta, b: MemoryFileMeta): number {
-  if (a.path === 'MEMORY.md' && b.path !== 'MEMORY.md') return -1
-  if (b.path === 'MEMORY.md' && a.path !== 'MEMORY.md') return 1
+  // Root config/identity files first, in ROOT_MEMORY_FILES order (SOUL, AGENTS,
+  // USER, MEMORY), so the files that shape the agent sit at the top of the tab.
+  const aRank = ROOT_MEMORY_FILES.indexOf(a.path)
+  const bRank = ROOT_MEMORY_FILES.indexOf(b.path)
+  if (aRank !== -1 || bRank !== -1) {
+    if (aRank === -1) return 1
+    if (bRank === -1) return -1
+    return aRank - bRank
+  }
 
   const aIsDaily = /^memories?\/\d{4}-\d{2}-\d{2}\.md$/.test(a.path)
   const bIsDaily = /^memories?\/\d{4}-\d{2}-\d{2}\.md$/.test(b.path)
@@ -143,7 +157,9 @@ export function listMemoryFiles(): Array<MemoryFileMeta> {
   const workspaceRoot = getMemoryWorkspaceRoot()
   const results: Array<MemoryFileMeta> = []
 
-  pushIfMarkdownFile(results, workspaceRoot, path.join(workspaceRoot, 'MEMORY.md'))
+  for (const rootFile of ROOT_MEMORY_FILES) {
+    pushIfMarkdownFile(results, workspaceRoot, path.join(workspaceRoot, rootFile))
+  }
   for (const subdir of ['memory', 'memories']) {
     walkWorkspaceDir(results, workspaceRoot, path.join(workspaceRoot, subdir))
   }
@@ -262,9 +278,7 @@ export async function listMemoryFilesUnified(): Promise<{
         dashListDir('memories'),
       ])
       const files = [
-        ...root.filter(
-          (file) => file.path === 'MEMORY.md' || file.path === 'USER.md',
-        ),
+        ...root.filter((file) => ROOT_MEMORY_FILES.includes(file.path)),
         ...memoryDir,
         ...memoriesDir,
       ]
