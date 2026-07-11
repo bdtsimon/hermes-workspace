@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { isAuthenticated } from '../../../server/auth-middleware'
-import { readMemoryFile } from '../../../server/memory-browser'
+import { readMemoryFileUnified } from '../../../server/memory-browser'
 
 export const Route = createFileRoute('/api/memory/read')({
   server: {
@@ -10,12 +10,13 @@ export const Route = createFileRoute('/api/memory/read')({
         if (!isAuthenticated(request)) {
           return json({ error: 'Unauthorized' }, { status: 401 })
         }
-        // Memory is local-fs only. No remote gateway check needed.
+        // Agent store first (dashboard files API), local fs fallback —
+        // see memory-browser.ts for the unification rules.
         const url = new URL(request.url)
         const pathParam = url.searchParams.get('path') || ''
         try {
-          const content = readMemoryFile(pathParam)
-          return json({ path: pathParam, content })
+          const { content, source } = await readMemoryFileUnified(pathParam)
+          return json({ path: pathParam, content, source })
         } catch (error) {
           const message =
             error instanceof Error

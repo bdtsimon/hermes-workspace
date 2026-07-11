@@ -2,6 +2,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import {
+  dashboardFetch,
+  ensureGatewayProbed,
+  getCapabilities,
+} from './gateway-capabilities'
+
 export type MemoryFileMeta = {
   path: string
   name: string
@@ -179,4 +185,205 @@ export function searchMemoryFiles(query: string): Array<MemorySearchMatch> {
   }
 
   return matches
+}
+
+// ── Agent-backed memory (A/B-store unification) ─────────────────────────
+//
+// The agent's built-in memory lives in ITS data dir (our deploy: /opt/data →
+// memories/MEMORY.md + memories/USER.md), not in the workspace's HERMES_HOME —
+// so the local reads above see an empty directory on split deployments and the
+// Memory tab lied with "No memory files found" while the agent had content.
+// The dashboard files API (GET /api/files, /api/files/read, POST
+// /api/files/upload — token-authed via dashboardFetch) is the stable channel
+// to that data; local files remain the fallback when the dashboard is down.
+// Writes NEVER silently fall back while the agent is reachable — that would
+// split-brain the memory.
+
+const AGENT_HOME = (process.env.HERMES_AGENT_HOME || '/opt/data')
+  .trim()
+  .replace(/\/+$/, '')
+
+export type MemorySource = 'agent' | 'local'
+
+async function dashboardMemoryAvailable(): Promise<boolean> {
+  try {
+    const caps = await ensureGatewayProbed()
+    return caps.dashboard.available === true
+  } catch {
+    return getCapabilities().dashboard.available === true
+  }
+}
+
+function toIsoModified(value: unknown): string {
+  if (typeof value === 'string' && value) {
+    const parsed = Date.parse(value)
+    if (!Number.isNaN(parsed)) return new Date(parsed).toISOString()
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // Heuristic: seconds vs milliseconds epoch.
+    return new Date(value > 1e12 ? value : value * 1000).toISOString()
+  }
+  return new Date(0).toISOString()
+}
+
+async function dashListDir(relDir: string): Promise<Array<MemoryFileMeta>> {
+  const absPath = relDir ? `${AGENT_HOME}/${relDir}` : AGENT_HOME
+  const res = await dashboardFetch(
+    `/api/files?path=${encodeURIComponent(absPath)}`,
+  )
+  if (!res.ok) return []
+  const data = (await res.json().catch(() => ({}))) as {
+    entries?: Array<Record<string, unknown>>
+  }
+  const out: Array<MemoryFileMeta> = []
+  for (const entry of data.entries || []) {
+    const name = typeof entry.name === 'string' ? entry.name : ''
+    if (!name || entry.is_directory === true) continue
+    if (!name.toLowerCase().endsWith('.md')) continue
+    out.push({
+      path: relDir ? `${relDir}/${name}` : name,
+      name,
+      size: typeof entry.size === 'number' ? entry.size : 0,
+      modified: toIsoModified(entry.modified ?? entry.mtime),
+    })
+  }
+  return out
+}
+
+export async function listMemoryFilesUnified(): Promise<{
+  files: Array<MemoryFileMeta>
+  source: MemorySource
+}> {
+  if (await dashboardMemoryAvailable()) {
+    try {
+      const [root, memoryDir, memoriesDir] = await Promise.all([
+        dashListDir(''),
+        dashListDir('memory'),
+        dashListDir('memories'),
+      ])
+      const files = [
+        ...root.filter(
+          (file) => file.path === 'MEMORY.md' || file.path === 'USER.md',
+        ),
+        ...memoryDir,
+        ...memoriesDir,
+      ]
+      files.sort(compareMemoryFiles)
+      // The agent answered — its view is the truth, even when empty.
+      return { files, source: 'agent' }
+    } catch {
+      // dashboard hiccup — fall back to local below
+    }
+  }
+  return { files: listMemoryFiles(), source: 'local' }
+}
+
+export async function readMemoryFileUnified(relativePath: string): Promise<{
+  content: string
+  source: MemorySource
+}> {
+  const safe = normalizeRelativeMemoryPath(relativePath)
+  if (await dashboardMemoryAvailable()) {
+    let agentAnswered = false
+    try {
+      const res = await dashboardFetch(
+        `/api/files/read?path=${encodeURIComponent(`${AGENT_HOME}/${safe}`)}`,
+      )
+      agentAnswered = true
+      if (res.ok) {
+        const data = (await res.json().catch(() => ({}))) as {
+          data_url?: unknown
+        }
+        const match =
+          typeof data.data_url === 'string'
+            ? /^data:[^;,]*(?:;base64)?,(.*)$/.exec(data.data_url)
+            : null
+        if (match && typeof data.data_url === 'string') {
+          const content = data.data_url.includes(';base64,')
+            ? Buffer.from(match[1], 'base64').toString('utf-8')
+            : decodeURIComponent(match[1])
+          return { content, source: 'agent' }
+        }
+      }
+      if (res.status === 404) {
+        throw new Error(`ENOENT: memory file not found: ${safe}`)
+      }
+    } catch (error) {
+      if (agentAnswered && error instanceof Error && /ENOENT/.test(error.message)) {
+        throw error
+      }
+      // network/dashboard failure — fall back to local below
+    }
+  }
+  return { content: readMemoryFile(safe), source: 'local' }
+}
+
+export async function writeMemoryFileUnified(
+  relativePath: string,
+  content: string,
+): Promise<{ source: MemorySource; path: string }> {
+  const safe = normalizeRelativeMemoryPath(relativePath)
+  if (await dashboardMemoryAvailable()) {
+    // While the agent is reachable, its store is the ONLY write target —
+    // a silent local fallback would fork the memory into two truths.
+    const dataUrl =
+      'data:text/markdown;base64,' +
+      Buffer.from(content, 'utf-8').toString('base64')
+    const res = await dashboardFetch('/api/files/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: `${AGENT_HOME}/${safe}`,
+        data_url: dataUrl,
+        overwrite: true,
+      }),
+    })
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as {
+        detail?: unknown
+      }
+      throw new Error(
+        typeof data.detail === 'string' && data.detail
+          ? data.detail
+          : `Agent memory write failed (${res.status})`,
+      )
+    }
+    return { source: 'agent', path: safe }
+  }
+  const { fullPath } = resolveMemoryFilePath(safe)
+  fs.mkdirSync(path.dirname(fullPath), { recursive: true })
+  fs.writeFileSync(fullPath, content, 'utf-8')
+  return { source: 'local', path: safe }
+}
+
+export async function searchMemoryFilesUnified(query: string): Promise<{
+  results: Array<MemorySearchMatch>
+  source: MemorySource
+}> {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return { results: [], source: 'agent' }
+
+  const { files, source } = await listMemoryFilesUnified()
+  if (source === 'local') {
+    return { results: searchMemoryFiles(query), source }
+  }
+
+  const matches: Array<MemorySearchMatch> = []
+  for (const file of files.slice(0, 30)) {
+    let content = ''
+    try {
+      const read = await readMemoryFileUnified(file.path)
+      content = read.content
+    } catch {
+      continue
+    }
+    const lines = content.split(/\r?\n/)
+    for (let index = 0; index < lines.length; index += 1) {
+      const text = lines[index] || ''
+      if (!text.toLowerCase().includes(needle)) continue
+      matches.push({ path: file.path, line: index + 1, text })
+      if (matches.length >= 200) return { results: matches, source }
+    }
+  }
+  return { results: matches, source }
 }

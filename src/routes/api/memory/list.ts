@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { isAuthenticated } from '../../../server/auth-middleware'
-import { listMemoryFiles } from '../../../server/memory-browser'
+import { listMemoryFilesUnified } from '../../../server/memory-browser'
 
 export const Route = createFileRoute('/api/memory/list')({
   server: {
@@ -10,11 +10,14 @@ export const Route = createFileRoute('/api/memory/list')({
         if (!isAuthenticated(request)) {
           return json({ error: 'Unauthorized' }, { status: 401 })
         }
-        // Memory is sourced entirely from local filesystem via memory-browser.ts
-        // (reads $HERMES_HOME/MEMORY.md + $HERMES_HOME/memory/ + /memories/). No
-        // remote gateway endpoint is required, so no capability gate is needed.
+        // Memory prefers the AGENT's store: the agent keeps MEMORY.md/USER.md
+        // under ITS home (dashboard files API), not under the workspace's
+        // $HERMES_HOME — on split deployments the local dir is empty while the
+        // agent has content. Local fs is the fallback when the dashboard is
+        // unreachable; `source` tells the UI which store answered.
         try {
-          return json({ files: listMemoryFiles() })
+          const { files, source } = await listMemoryFilesUnified()
+          return json({ files, source })
         } catch (error) {
           return json(
             {
