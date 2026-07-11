@@ -16,7 +16,6 @@ import { OperationsAgentDetail } from './components/operations-agent-detail'
 import { OperationsNewAgentModal } from './components/operations-new-agent-modal'
 import { OperationsSettingsModal } from './components/operations-settings-modal'
 import { FullOutputsView } from './components/full-outputs-view'
-import { AgentBusPanel } from './components/agent-bus-panel'
 import { useOperations } from './hooks/use-operations'
 
 export const THEME_STYLE: CSSProperties = {
@@ -160,13 +159,15 @@ export function OperationsScreen() {
               />
             </motion.div>
 
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.05, duration: 0.25 }}
-            >
-              <AgentBusPanel />
-            </motion.div>
+            {/*
+              Removed: <AgentBusPanel />. The `/api/agent-bus` route is the
+              upstream author's PRIVATE orchestration bus (hardcoded to
+              /opt/central-inteligencia + their own agent personas), inert in
+              this deployment — it rendered an all-zero "Troop Status" panel
+              pointing at paths that don't exist here. Hidden to keep the
+              Operations screen honest (no foreign/fake state). The route +
+              component stay dormant for a smaller upstream diff.
+            */}
 
             <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {agents.map((agent, index) => (
