@@ -1,12 +1,9 @@
-import { execFile } from 'node:child_process'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { promisify } from 'node:util'
 import { createFileRoute } from '@tanstack/react-router'
 import { json } from '@tanstack/react-start'
 import { isAuthenticated } from '../../../server/auth-middleware'
-
-const execFileAsync = promisify(execFile)
+import { dashboardFetch } from '../../../server/gateway-capabilities'
 
 type SkillSearchResult = {
   id: string
@@ -133,22 +130,67 @@ async function searchBundledSkills(
   }
 }
 
-async function searchPythonSkillsHub(
+// The community Skills Hub search is network-bound and lives in the Hermes
+// agent's own tooling (`tools.skills_hub`, deeply coupled to the agent
+// codebase). Rather than vendoring that ~4k-line module + its Python deps into
+// this node-only container, we proxy to the agent dashboard's existing
+// `GET /api/skills/hub/search` over the shared docker network — the same
+// agent-first unification the memory/jobs/kanban tabs already use. On any
+// failure the caller falls back to the bundled-skills search below.
+async function searchAgentSkillsHub(
   query: string,
   limit: number,
   source: string,
 ): Promise<SkillSearchPayload> {
-  const scriptPath = path.join(process.cwd(), 'scripts/skills-search.py')
-  const { stdout } = await execFileAsync(
-    'python3',
-    [scriptPath, query, String(limit), source],
-    {
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024 * 2,
-    },
-  )
+  const params = new URLSearchParams({
+    q: query,
+    source: source || 'all',
+    limit: String(limit),
+  })
+  const res = await dashboardFetch(`/api/skills/hub/search?${params.toString()}`, {
+    method: 'GET',
+  })
+  if (!res.ok) {
+    throw new Error(`agent skills-hub search failed: HTTP ${res.status}`)
+  }
 
-  return JSON.parse(stdout.trim()) as SkillSearchPayload
+  const data = (await res.json()) as {
+    results?: Array<{
+      name?: string
+      description?: string
+      source?: string
+      identifier?: string
+      trust_level?: string
+      repo?: string
+      tags?: Array<string>
+    }>
+    installed?: Record<string, unknown>
+  }
+
+  const installed = data.installed ?? {}
+  const results: Array<SkillSearchResult> = (data.results ?? []).map((r) => {
+    const id = normalizeText(r.identifier) || normalizeText(r.name)
+    const sourceLabel = normalizeText(r.source)
+    return {
+      id,
+      name: normalizeText(r.name) || id,
+      description: normalizeText(r.description),
+      author: sourceLabel,
+      category: sourceLabel,
+      tags: Array.isArray(r.tags) ? r.tags.map(String) : [],
+      source: sourceLabel || 'Skills Hub',
+      trust: normalizeText(r.trust_level) || 'community',
+      installCommand: `claude skills install ${id}`,
+      installed: Boolean(id && installed[id]),
+    }
+  })
+
+  return {
+    ok: true,
+    results,
+    source: 'skills-hub',
+    total: results.length,
+  }
 }
 
 export const Route = createFileRoute('/api/skills/hub-search')({
@@ -174,7 +216,7 @@ export const Route = createFileRoute('/api/skills/hub-search')({
           }
 
           try {
-            return json(await searchPythonSkillsHub(query, limit, source))
+            return json(await searchAgentSkillsHub(query, limit, source))
           } catch {
             return json(await searchBundledSkills(query, limit))
           }
