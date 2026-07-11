@@ -12,7 +12,7 @@ import {
 } from '../../server/gateway-capabilities'
 import {
   createProfileCronJob,
-  listProfileCronJobs,
+  listProfileCronJobsUnified,
 } from '../../server/hermes-cron-profiles'
 import { createCapabilityUnavailablePayload } from '@/lib/feature-gates'
 
@@ -62,7 +62,11 @@ export const Route = createFileRoute('/api/claude-jobs')({
         const url = new URL(request.url)
         const aggregateProfiles = url.searchParams.get('profiles') !== 'active'
         if (aggregateProfiles) {
-          return new Response(JSON.stringify({ jobs: listProfileCronJobs() }), {
+          // Default listing mode — the AGENT's cron jobs (via the dashboard
+          // cron API) merged with local non-default profiles; purely local
+          // reads left the Jobs page blind on split deployments.
+          const { jobs, source } = await listProfileCronJobsUnified()
+          return new Response(JSON.stringify({ jobs, source }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })

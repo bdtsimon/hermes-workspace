@@ -3,6 +3,10 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { getHermesRoot, getProfilesDir } from './claude-paths'
+import {
+  dashboardFetch,
+  ensureGatewayProbed,
+} from './gateway-capabilities'
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const JOB_ID_RE = /^[A-Fa-f0-9]{8,64}$/
@@ -133,6 +137,43 @@ function readJobsFile(path: string): Array<RawCronJob> {
   }
 }
 
+function normalizeCronJob(
+  job: RawCronJob,
+  profile: string,
+  prefixId: boolean,
+): ProfileCronJob | null {
+  const rawId = readString(job.id, job.jobId)
+  if (!rawId) return null
+  const schedule = asRecord(job.schedule)
+  const display =
+    readString(
+      job.schedule_display,
+      schedule.display,
+      schedule.expr,
+      job.cron,
+    ) ?? '* * * * *'
+  const state =
+    readString(job.state, job.status) ??
+    (readBoolean(job.enabled, true) ? 'scheduled' : 'paused')
+  return {
+    ...job,
+    id: prefixId ? `${profile}:${rawId}` : rawId,
+    jobId: rawId,
+    profile,
+    profile_name: profile,
+    name: readString(job.name, job.title) ?? rawId,
+    prompt: readString(job.prompt, job.input, job.description) ?? '',
+    enabled: readBoolean(job.enabled, state !== 'paused'),
+    state,
+    schedule_display: display,
+    next_run_at: readString(job.next_run_at, job.nextRunAt),
+    last_run_at: readString(job.last_run_at, job.lastRunAt),
+    last_run_success: lastRunSuccess(job),
+    last_run_error: readString(job.last_error, job.lastRunError),
+    deliver: normalizeDeliver(job.deliver),
+  }
+}
+
 export function listCronProfiles(): Array<{ profile: string; home: string }> {
   const entries = [{ profile: 'default', home: getHermesRoot() }]
   const profilesDir = getProfilesDir()
@@ -154,42 +195,62 @@ export function listProfileCronJobs(): Array<ProfileCronJob> {
   for (const entry of listCronProfiles()) {
     const jobs = readJobsFile(join(entry.home, 'cron', 'jobs.json'))
     for (const job of jobs) {
-      const rawId = readString(job.id, job.jobId)
-      if (!rawId) continue
-      const schedule = asRecord(job.schedule)
-      const display =
-        readString(
-          job.schedule_display,
-          schedule.display,
-          schedule.expr,
-          job.cron,
-        ) ?? '* * * * *'
-      const state =
-        readString(job.state, job.status) ??
-        (readBoolean(job.enabled, true) ? 'scheduled' : 'paused')
-      rows.push({
-        ...job,
-        id: `${entry.profile}:${rawId}`,
-        jobId: rawId,
-        profile: entry.profile,
-        profile_name: entry.profile,
-        name: readString(job.name, job.title) ?? rawId,
-        prompt: readString(job.prompt, job.input, job.description) ?? '',
-        enabled: readBoolean(job.enabled, state !== 'paused'),
-        state,
-        schedule_display: display,
-        next_run_at: readString(job.next_run_at, job.nextRunAt),
-        last_run_at: readString(job.last_run_at, job.lastRunAt),
-        last_run_success: lastRunSuccess(job),
-        last_run_error: readString(job.last_error, job.lastRunError),
-        deliver: normalizeDeliver(job.deliver),
-      })
+      const row = normalizeCronJob(job, entry.profile, true)
+      if (row) rows.push(row)
     }
   }
   return rows.sort(
     (a, b) =>
       a.profile.localeCompare(b.profile) || a.name.localeCompare(b.name),
   )
+}
+
+// ── Agent-backed cron listing (A/B-store unification) ───────────────────
+//
+// The aggregate listing above reads only LOCAL profile homes, which are
+// empty when the workspace runs in its own container while the agent keeps
+// its cron state in ITS data dir — the Jobs page said "no cron jobs found"
+// regardless of what the agent had scheduled. Agent jobs are listed through
+// the dashboard cron API with PLAIN ids (no `profile:` prefix), so every
+// per-job route (detail/runs/actions/edit/delete) naturally takes its
+// already-working dashboard branch. Local non-default profiles (host
+// installs running several hermes homes next to the workspace) still merge
+// in with prefixed ids and keep the CLI-backed flow.
+export async function listProfileCronJobsUnified(): Promise<{
+  jobs: Array<ProfileCronJob>
+  source: 'agent' | 'local'
+}> {
+  const local = listProfileCronJobs()
+  try {
+    const capabilities = await ensureGatewayProbed()
+    if (!capabilities.dashboard.available) {
+      return { jobs: local, source: 'local' }
+    }
+    const res = await dashboardFetch('/api/cron/jobs')
+    if (!res.ok) return { jobs: local, source: 'local' }
+    const data = (await res.json().catch(() => ({}))) as
+      | { jobs?: Array<RawCronJob> }
+      | Array<RawCronJob>
+    const rawJobs = Array.isArray(data)
+      ? data
+      : Array.isArray(data.jobs)
+        ? data.jobs
+        : []
+    const agentRows = rawJobs
+      .map((job) => normalizeCronJob(job, 'default', false))
+      .filter((row): row is ProfileCronJob => row !== null)
+    // The agent's answer replaces the local 'default' view (same store on a
+    // host install, the REAL one on a split deployment); other profiles are
+    // workspace-local by definition and merge in unchanged.
+    const nonDefaultLocal = local.filter((row) => row.profile !== 'default')
+    const jobs = [...agentRows, ...nonDefaultLocal].sort(
+      (a, b) =>
+        a.profile.localeCompare(b.profile) || a.name.localeCompare(b.name),
+    )
+    return { jobs, source: 'agent' }
+  } catch {
+    return { jobs: local, source: 'local' }
+  }
 }
 
 export function parseProfileJobId(value: string): ParsedProfileJobId {
